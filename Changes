@@ -1,0 +1,8 @@
+$Id: Changes,v 1.1.1.1 2001/06/27 15:38:13 marcus Exp $
+
+Revision history for Perl extension Net::Telnet::Netscreen.
+
+1.0.1 Thu Oct 18 08:46:00
+	- Changed name from Ns1000 to Netscreen
+1.0   Fri Jun 27 13:06:42 PDT 2001 
+	- Initial release
