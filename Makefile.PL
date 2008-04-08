@@ -3,6 +3,6 @@ use ExtUtils::MakeMaker;
 # the contents of the Makefile that is written.
 WriteMakefile(
     'NAME'		=> 'Net::Telnet::Netscreen',
-    'VERSION_FROM'	=> 'Netscreen.pm', # finds $VERSION
+    'VERSION_FROM'	=> 'lib/Net/Telnet/Netscreen.pm', # finds $VERSION
     'PREREQ_PM'		=> { Net::Telnet => 3.02 }, # e.g., Module::Name => 1.1
 );

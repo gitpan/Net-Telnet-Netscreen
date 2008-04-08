@@ -4,20 +4,19 @@ package Net::Telnet::Netscreen;
 #
 # Net::Telnet::Netscreen - Control Netscreen firewalls 
 #
-# by Marcus Ramberg <m.ramberg@wineasy.no>
+# by Marcus Ramberg <m@songsolutions.no>
 # Lots of code ripped from Net::Telnet::Cisco;
 #
 #-----------------------------------------------------------------
 
 use strict;
 use Net::Telnet 3.02;
-use AutoLoader;
 use Carp;
 
 use vars qw($AUTOLOAD @ISA $VERSION);
 
 @ISA      = qw (Net::Telnet);
-$VERSION  = '1.01';
+$VERSION  = '1.2';
 
 
 #------------------------------
@@ -29,9 +28,10 @@ $VERSION  = '1.01';
 sub ping {
     my ($self,$host)=@_;
     if ($self->cmd('ping '.$host)) {
-      if ($self->lastline =~ /Success Rate rate is (\d+) percent/) {
+      my $l=$self->lastline;
+      if ($l =~ /Success Rate is (\d+) percent/) {
         return $1;
-      }
+      } else { print "FOO", $l };
     }
     return 0;  
 }
@@ -53,15 +53,19 @@ sub last_cmd {
 
 # Displays the current vsys
 sub current_vsys { 
-  #$_[0]->last_prompt =~ /\(([\w.-])\)/ ? $1 : undef;
-  $_[0]->last_prompt =~ /\(([\w.-]+)\)/ ? $1 : undef;
+  my ($self) =@_;
+  if ($self->ha_mode ne '') {
+    $self->last_prompt =~ /\(([\w.-]+)\)\(\w+\)/ ? $1 : '';
+  } else {
+    $self->last_prompt =~ /\(([\w.-]+)\)/ ? $1 : '';
+  }
 }
 
 # enter a vsys
 sub enter_vsys { 
   my ($self, $vsys) = @_;
   if ($self->current_vsys) {
-     $self->exit(1);
+     return $self->error('Already in a vsys');
   }
   my %vsys = $self->get_vsys();
   if (exists $vsys{$vsys}) {
@@ -73,14 +77,22 @@ sub enter_vsys {
   } else { return $self->error("Vsys not found");}
 }
 
+sub ha_mode {
+  my ($self) = @_;
+  my $stream = $ {*$self}{net_telnet_Netscreen};
+  return $stream->{ha_mode};
+}
+
 # exit a vsys or main {
 sub exit { 
   my ($self,$save) =@_;
+  my $stream = $ {*$self}{net_telnet_Netscreen};
   if ($self->current_vsys) {
-    $self->cmd('save');
+    $self->cmd('save') if $stream->{changed};
     $self->cmd('exit');
+    $stream->{changed}=0;
   } else {
-    $self->cmd('save');
+    $self->cmd('save') if $stream->{changed};
     $self->close;
   }
 }
@@ -89,7 +101,7 @@ sub exit {
 sub get_vsys {
   my $self = shift;
   my (%vsys,$result,$backupsys);
-  if ($self->current_vsys ne '') {
+  if ($self->current_vsys) {
     $backupsys=$self->current_vsys;
     $self->cmd('exit');
   }
@@ -154,6 +166,8 @@ sub new {
     *$self->{net_telnet_Netscreen} = {
 	last_prompt  => '',
         last_cmd     => '',
+	ha_mode	     => '',
+	changed      => 0,
     };
 
     $self
@@ -194,6 +208,156 @@ sub prompt {
 
 
 
+sub scrolling_cmd {
+    my ($self, @args) = @_;
+    my (
+	$arg,
+	$buf,
+	$cmd_remove_mode,
+	$firstpos,
+	$lastpos,
+	$lines,
+	$orig_errmode,
+	$orig_prompt,
+	$orig_timeout,
+	$output,
+	$output_ref,
+	$prompt,
+	$remove_echo,
+	$rs,
+	$rs_len,
+	$telopt_echo,
+	$timeout,
+	@cmd,
+	);
+    local $_;
+
+    ## Init vars.
+    $output = [];
+    $cmd_remove_mode = $self->SUPER::cmd_remove_mode;
+    $timeout = $self->SUPER::timeout;
+    $self->SUPER::timed_out('');
+    return if $self->SUPER::eof;
+
+    ## Parse args.
+    if (@_ == 2) {  # one positional arg given
+	push @cmd, $_[1];
+    }
+    elsif (@_ > 2) {  # named args given
+	## Parse the named args.
+	while (($_, $arg) = splice @args, 0, 2) {
+	    if (/^-?cmd_remove/i) {
+		$cmd_remove_mode = $arg;
+		$cmd_remove_mode = "auto"
+		    if $cmd_remove_mode =~ /^auto/i;
+	    }
+	    elsif (/^-?output$/i) {
+		$output_ref = $arg;
+		if (defined($output_ref) and ref($output_ref) eq "ARRAY") {
+		    $output = $output_ref;
+		}
+	    }
+	    elsif (/^-?prompt$/i) {
+		$prompt = $arg;
+	    }
+	    elsif (/^-?string$/i) {
+		push @cmd, $arg;
+	    }
+	    elsif (/^-?timeout$/i) {
+		$timeout = &_parse_timeout($arg);
+	    }
+	    else {
+		return $self->SUPER::error('usage: $obj->cmd(',
+				    '[Cmd_remove => $boolean,] ',
+				    '[Output => $ref,] ',
+				    '[Prompt => $match,] ',
+				    '[String => $string,] ',
+				    '[Timeout => $secs,])');
+	    }
+	}
+    }
+
+    ## Override some user settings.
+    $orig_errmode = $self->SUPER::errmode('return');
+    $orig_timeout = $self->SUPER::timeout(&_endtime($timeout));
+    $orig_prompt  = $self->SUPER::prompt($prompt) if defined $prompt;
+    $self->SUPER::errmsg('');
+
+    ## Send command and wait for the prompt.
+    $self->print(@cmd);
+     my ($input,$match) = $self->SUPER::waitfor(Match=>$self->prompt,
+           			         String=>"\n--- more ---");
+     while ($match) {
+      $lines=$lines.$input;
+      last if (eval "\$match =~ ".$self->prompt);
+      $self->SUPER::print("");
+     ($input,$match) = $self->SUPER::waitfor(Match=>$self->prompt,
+           		              String=>"\n--- more ---");
+    }
+    chomp($lines); # Cleanup output
+    ## Restore user settings.
+    $self->SUPER::errmode($orig_errmode);
+    $self->SUPER::timeout($orig_timeout);
+    $self->SUPER::prompt($orig_prompt) if defined $orig_prompt;
+
+    ## Check for failure.
+    return $self->SUPER::error("command timed-out") if $self->SUPER::timed_out;
+    return $self->error($self->SUPER::errmsg) if $self->SUPER::errmsg ne '';
+    return if $self->SUPER::eof;
+
+    ## Split lines into an array, keeping record separator at end of line.
+    $firstpos = 0;
+    $rs = $self->SUPER::input_record_separator;
+    $rs_len = length $rs;
+    while (($lastpos = index($lines, $rs, $firstpos)) > -1) {
+	push(@$output,
+	     substr($lines, $firstpos, $lastpos - $firstpos + $rs_len));
+	$firstpos = $lastpos + $rs_len;
+    }
+
+    if ($firstpos < length $lines) {
+	push @$output, substr($lines, $firstpos);
+    }
+
+    ## Determine if we should remove the first line of output based
+    ## on the assumption that it's an echoed back command.
+    ## FIXME: I had to uncomment this for now. Hope it doesn't
+    ## break stuff too badly for anyone ;>
+#    if ($cmd_remove_mode eq "auto") {
+#	## See if remote side told us they'd echo.
+#	$telopt_echo = $self->SUPER::option_state(&TELOPT_ECHO);
+#	$remove_echo = $telopt_echo->{remote_enabled};
+#    }
+#    else {  # user explicitly told us how many lines to remove.
+#	$remove_echo = $cmd_remove_mode;
+#    }
+
+    ## Get rid of possible echo back command.
+    while ($remove_echo--) {
+	shift @$output;
+    }
+
+    ## Ensure at least a null string when there's no command output - so
+    ## "true" is returned in a list context.
+    unless (@$output) {
+	@$output = ('');
+    }
+
+    ## Return command output via named arg, if requested.
+    if (defined $output_ref) {
+	if (ref($output_ref) eq "SCALAR") {
+	    $$output_ref = join '', @$output;
+	}
+	elsif (ref($output_ref) eq "HASH") {
+	    %$output_ref = @$output;
+	}
+    }
+
+    wantarray ? @$output : 1;
+} # end sub scrolling_cmd
+
+
+
 sub cmd {
     my $self             = shift;
     my $ok               = 1;
@@ -210,8 +374,10 @@ sub cmd {
     }
 
     $ {*$self}{net_telnet_Netscreen}{last_cmd} = $cmd;
+    $ {*$self}{net_telnet_Netscreen}{changed} = 1 
+      if $cmd =~ m/^\s*(set|unset)/;
 
-    my @output = $self->SUPER::cmd(@_);
+    my @output = $self->scrolling_cmd(@_);
 
     for ( my ($i, $lastline) = (0, '');
 	  $i <= $#output;
@@ -450,6 +616,10 @@ sub login {
     return $self->error("login failed: access denied or bad name or password")
 	if $match =~ /(?:[Ll]ogin|[Uu]sername|[Pp]assword)[: ]*$/;
 
+   #if we have paranthesis at this point, box is in ha mode
+    $ {*$self}{net_telnet_Netscreen}{ha_mode} = $1
+        if $match =~/\((\w+)\)/;
+
     1;
 } # end sub login
 
@@ -510,9 +680,11 @@ you can't accomplish with SNMP, there's Net::Telnet::Netscreen.
 
 New methods not found in Net::Telnet follow:
 
-=over 4
 
-=item B<enter_vsys> - enter a virtual system
+
+
+
+=head2 enter_vsys - enter a virtual system
 
 Enter a virtual system in the firewall.
 parameter is system you want to enter .
@@ -522,7 +694,7 @@ for you if you do.
 (only works for ns-500+)
 
 
-=item B<enter_vsys> - exit from the level you are on
+=head2 exit_vsys - exit from the level you are on
 
 exit from the vsys you are in, or from the system
 if you are on the top. takes one parameter.
@@ -530,59 +702,82 @@ if you should save any changes or not.
 (only works for ns-500+)
 
 
-=item B<current_vsys> - show current vsys
+=head2 current_vsys - show current vsys
 
 return the vsys you currently are in.
 returns blank if you're not in a vsys.
 (only works for ns-500+)
 
 
-=item B<get_vsys> - return vsys.
+=head2 get_vsys - return vsys.
 
 returns a hash of all the virtual systems
 on your system, with system id's for values
 (only works for ns-500+)
 
+=head2 ha_mode - return high availability mode.
 
-=item B<ping> - ping a system.
+return the HA mode, if your system is in a HA cluster,
+or false if it isn't.
+
+=head2 ping - ping a system.
+
 Returns percentage of success (0-100).
 
   $sucess=$fw->ping('192.168.1.1');
 
-=item B<exit> - Exit system
+=head2 exit - Exit system
 
 use this command to exit system, or exit current
 vsys
 
-=item B<getValue> - Set a value from the box.
+=head2 getValue - Set a value from the box.
 
 Will return a value from the firewall, or from
 the vsys you are in, if you aren't in root.
 
-=item B<setValue> - Set a Value in the box.
+=head2 setValue - Set a Value in the box.
 
 Set a value in the box, returns true if set successfully.
 (guess what it returns if you fuck up? ;)
 
-=item B<lastPrompt> - Show the last prompt returned.
+=head2 lastPrompt - Show the last prompt returned.
 
 Shows the last prompt returned by your netscreen
 device.
 
-=item B<lastCmd> - Show the last command executed.
+=head2 lastCmd - Show the last command executed.
 
 Shows the last command executed on your netscreen
 device.
 
-=back
+=head1 OVERRIDEN METHODS
+
+=head2 last_cmd
+
+=head2 cmd
+
+=head2 last_prompt
+
+=head2 login
+
+=head2 new
+
+=head2 re_sans_delims
+
+=head2 scrolling_cmd
+
+=head2 waitfor
+
+See L<Net::Telnet> for documentation on these methods.
 
 =head1 AUTHOR
 
 The basic functionality was ripped from
-Joshua_Keroes@eli.net $Date: 2001/06/27 15:38:13 $
+Joshua_Keroes@eli.net $Date: 2002/07/18 10:45:12 $
 Modifications and additions to suit Netscreen was
 done by
-m.ramberg@wineasy.no $Date: 2001/06/27 15:38:13 $
+m.ramberg@wineasy.no $Date: 2002/07/18 10:45:12 $
 
 =head1 SEE ALSO
 
@@ -594,6 +789,12 @@ Copyright (c) 2001 Marcus Ramberg, Song Networks Norway.
 All rights reserved. This program is free software; you
 can redistribute it and/or modify it under the same terms
 as Perl itself.
+
+=head1 LICENSE
+
+This library is free software, you can redistribute it and/or modify
+it under the same terms as Perl itself.
+
 
 =cut
 

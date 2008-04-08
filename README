@@ -55,14 +55,14 @@ METHODS
     if set successfully. (guess what it returns if you fuck up? ;)
 
 ISSUES
-    currently, paging must be turned of if you are getting long input
-    from the Netscreen. If not, the script will time out and fail, due
-    to it waiting at the paging prompt
+    Note that on slow boxes, you might have to increase the Timeout 
+    parameter to avoid the box timing out on quit (Saving takes a *long*
+    time on our ns1000)
 
 AUTHOR
     The basic functionality was ripped from Joshua_Keroes@eli.net $Date:
     2000/07/30 22:16:51 $ Modifications and additions to suit Netscreen was
-    done by Marcus.Ramberg@songnetworks.no $Date: 2001/06/27 15:38:13 $
+    done by Marcus.Ramberg@songnetworks.no $Date: 2002/07/18 10:45:12 $
 
 SEE ALSO
     Net::Telnet, Net::SNMP
